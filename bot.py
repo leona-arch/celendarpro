@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sqlite3
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
@@ -14,8 +15,46 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 app = FastAPI()
 
-# База данных бронирований в памяти
-bookings_db = []
+# --- РАБОТА С БАЗОЙ ДАННЫХ SQLITE ---
+DB_FILE = "bookings.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bookings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guest TEXT NOT NULL,
+            dates TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def add_booking_to_db(guest, dates):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO bookings (guest, dates) VALUES (?, ?)', (guest, dates))
+    conn.commit()
+    conn.close()
+
+def get_all_bookings():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, guest, dates FROM bookings')
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def delete_booking_by_id(booking_id):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM bookings WHERE id = ?', (booking_id,))
+    conn.commit()
+    conn.close()
+
+# Инициализируем БД при старте
+init_db()
 
 class BookingForm(StatesGroup):
     waiting_for_guest = State()
@@ -28,7 +67,6 @@ class CancelForm(StatesGroup):
 def index():
     return {"status": "Ahatsa Bot is running!"}
 
-# Главная клавиатура с кнопкой отмены
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📅 Шахматка"), KeyboardButton(text="➕ Новая бронь")],
@@ -48,13 +86,14 @@ async def cmd_start(message: types.Message):
 
 @dp.message(F.text == "📅 Шахматка")
 async def show_calendar(message: types.Message):
-    if not bookings_db:
-        await message.answer("📅 **Шахматка на Октябрь 2026**\n\nВсе даты пока свободны!", parse_mode="Markdown")
+    bookings = get_all_bookings()
+    if not bookings:
+        await message.answer("📅 **Шахматка**\n\nВсе даты пока свободны!", parse_mode="Markdown")
         return
     
     text = "📅 **Актуальные бронирования «Ахьаца»:**\n\n"
-    for i, b in enumerate(bookings_db, 1):
-        text += f"{i}. 👤 **{b['guest']}**: {b['dates']}\n"
+    for i, b in enumerate(bookings, 1):
+        text += f"{i}. 👤 **{b[1]}**: {b[2]}\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "➕ Новая бронь")
@@ -74,11 +113,11 @@ async def process_dates(message: types.Message, state: FSMContext):
     guest_name = user_data['guest']
     booking_dates = message.text
     
-    bookings_db.append({"guest": guest_name, "dates": booking_dates})
+    add_booking_to_db(guest_name, booking_dates)
     await state.clear()
     
     await message.answer(
-        f"✅ **Бронь успешно добавлена!**\n\n"
+        f"✅ **Бронь успешно сохранена в базу!**\n\n"
         f"👤 Гость: **{guest_name}**\n"
         f"🗓 Даты: **{booking_dates}**",
         parse_mode="Markdown",
@@ -87,24 +126,25 @@ async def process_dates(message: types.Message, state: FSMContext):
 
 @dp.message(F.text == "📋 Ближайшие заезды")
 async def show_list(message: types.Message):
-    if not bookings_db:
+    bookings = get_all_bookings()
+    if not bookings:
         await message.answer("📋 Ближайших заездов нет.")
     else:
         text = "📋 **Список ближайших заездов:**\n\n"
-        for i, b in enumerate(bookings_db, 1):
-            text += f"{i}. {b['guest']} — {b['dates']}\n"
+        for i, b in enumerate(bookings, 1):
+            text += f"{i}. {b[1]} — {b[2]}\n"
         await message.answer(text)
 
-# --- ЛОГИКА ОТМЕНЫ БРОНИ ---
 @dp.message(F.text == "❌ Отменить бронь")
 async def cancel_booking_start(message: types.Message, state: FSMContext):
-    if not bookings_db:
+    bookings = get_all_bookings()
+    if not bookings:
         await message.answer("❌ У вас пока нет активных броней для отмены.")
         return
     
     text = "❓ **Укажите номер брони, которую нужно отменить:**\n\n"
-    for i, b in enumerate(bookings_db, 1):
-        text += f"**{i}** — {b['guest']} ({b['dates']})\n"
+    for i, b in enumerate(bookings, 1):
+        text += f"**{i}** — {b[1]} ({b[2]})\n"
     
     text += "\n*Отправьте цифру в ответное сообщение:*"
     await state.set_state(CancelForm.waiting_for_number)
@@ -117,13 +157,15 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
         return
 
     num = int(message.text) - 1
+    bookings = get_all_bookings()
 
-    if 0 <= num < len(bookings_db):
-        removed = bookings_db.pop(num)
+    if 0 <= num < len(bookings):
+        target_booking = bookings[num]
+        delete_booking_by_id(target_booking[0]) # Удаляем из базы по ID
         await state.clear()
         await message.answer(
-            f"🗑 **Бронь отменена!**\n\n"
-            f"Удалено: **{removed['guest']}** ({removed['dates']})",
+            f"🗑 **Бронь отменена и удалена из базы!**\n\n"
+            f"Удалено: **{target_booking[1]}** ({target_booking[2]})",
             parse_mode="Markdown",
             reply_markup=main_keyboard
         )
