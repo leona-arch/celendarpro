@@ -14,21 +14,26 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 app = FastAPI()
 
-# Простая база данных в памяти бота
+# База данных бронирований в памяти
 bookings_db = []
 
 class BookingForm(StatesGroup):
     waiting_for_guest = State()
     waiting_for_dates = State()
 
+class CancelForm(StatesGroup):
+    waiting_for_number = State()
+
 @app.get("/")
 def index():
     return {"status": "Ahatsa Bot is running!"}
 
+# Главная клавиатура с кнопкой отмены
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📅 Шахматка"), KeyboardButton(text="➕ Новая бронь")],
-        [KeyboardButton(text="📋 Ближайшие заезды"), KeyboardButton(text="⚙️ Настройки iCal")]
+        [KeyboardButton(text="📋 Ближайшие заезды"), KeyboardButton(text="❌ Отменить бронь")],
+        [KeyboardButton(text="⚙️ Настройки iCal")]
     ],
     resize_keyboard=True
 )
@@ -48,8 +53,8 @@ async def show_calendar(message: types.Message):
         return
     
     text = "📅 **Актуальные бронирования «Ахьаца»:**\n\n"
-    for b in bookings_db:
-        text += f"👤 **{b['guest']}**: {b['dates']}\n"
+    for i, b in enumerate(bookings_db, 1):
+        text += f"{i}. 👤 **{b['guest']}**: {b['dates']}\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "➕ Новая бронь")
@@ -76,7 +81,8 @@ async def process_dates(message: types.Message, state: FSMContext):
         f"✅ **Бронь успешно добавлена!**\n\n"
         f"👤 Гость: **{guest_name}**\n"
         f"🗓 Даты: **{booking_dates}**",
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=main_keyboard
     )
 
 @dp.message(F.text == "📋 Ближайшие заезды")
@@ -88,6 +94,41 @@ async def show_list(message: types.Message):
         for i, b in enumerate(bookings_db, 1):
             text += f"{i}. {b['guest']} — {b['dates']}\n"
         await message.answer(text)
+
+# --- ЛОГИКА ОТМЕНЫ БРОНИ ---
+@dp.message(F.text == "❌ Отменить бронь")
+async def cancel_booking_start(message: types.Message, state: FSMContext):
+    if not bookings_db:
+        await message.answer("❌ У вас пока нет активных броней для отмены.")
+        return
+    
+    text = "❓ **Укажите номер брони, которую нужно отменить:**\n\n"
+    for i, b in enumerate(bookings_db, 1):
+        text += f"**{i}** — {b['guest']} ({b['dates']})\n"
+    
+    text += "\n*Отправьте цифру в ответное сообщение:*"
+    await state.set_state(CancelForm.waiting_for_number)
+    await message.answer(text, parse_mode="Markdown")
+
+@dp.message(CancelForm.waiting_for_number)
+async def process_cancel_number(message: types.Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("⚠️ Пожалуйста, введите только номер (цифрой), например `1`.")
+        return
+
+    num = int(message.text) - 1
+
+    if 0 <= num < len(bookings_db):
+        removed = bookings_db.pop(num)
+        await state.clear()
+        await message.answer(
+            f"🗑 **Бронь отменена!**\n\n"
+            f"Удалено: **{removed['guest']}** ({removed['dates']})",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard
+        )
+    else:
+        await message.answer("⚠️ Брони с таким номером не существует. Попробуйте еще раз:")
 
 @dp.message(F.text == "⚙️ Настройки iCal")
 async def settings_ical(message: types.Message):
