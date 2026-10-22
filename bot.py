@@ -3,12 +3,21 @@ import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from fastapi import FastAPI
+import uvicorn
 
-# Замените "ВАШ_ТОКЕН_БОТА" на реальный токен от @BotFather
+# Токен бота
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# FastAPI для того, чтобы Render считал приложение веб-сервисом
+app = FastAPI()
+
+@app.get("/")
+def index():
+    return {"status": "Ahatsa Bot is running!"}
 
 # Главные кнопки под клавиатурой
 main_keyboard = ReplyKeyboardMarkup(
@@ -34,8 +43,7 @@ async def show_calendar(message: types.Message):
         "22 Чт: 🟢 Свободно\n"
         "23 Пт: 🟢 Свободно\n"
         "24 Сб: 🟢 Свободно\n"
-        "25 Вс: 🟢 Свободно\n\n"
-        "*(Интерактивный режим)*",
+        "25 Вс: 🟢 Свободно",
         parse_mode="Markdown"
     )
 
@@ -51,9 +59,13 @@ async def show_list(message: types.Message):
 async def settings_ical(message: types.Message):
     await message.answer("⚙️ Здесь будут храниться ваши ссылки iCal.")
 
-async def main():
-    print("Бот успешно запущен!")
+async def run_bot():
     await dp.start_polling(bot)
 
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(run_bot())
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
