@@ -12,6 +12,7 @@
             padding: 10px;
             background-color: #f4f5f7;
             color: #333;
+            user-select: none;
         }
         .header-controls {
             display: flex;
@@ -21,15 +22,8 @@
             flex-wrap: wrap;
             gap: 10px;
         }
-        h2 {
-            margin: 0;
-            font-size: 16px;
-        }
-        .month-picker-container {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
+        h2 { margin: 0; font-size: 16px; }
+        .month-picker-container { display: flex; align-items: center; gap: 8px; }
         .btn-nav {
             background-color: #007aff;
             color: white;
@@ -38,9 +32,6 @@
             border-radius: 6px;
             font-weight: bold;
             cursor: pointer;
-        }
-        .btn-nav:active {
-            opacity: 0.8;
         }
         select {
             padding: 5px 8px;
@@ -54,19 +45,16 @@
             background: white;
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            max-height: 80vh;
+            max-height: 75vh;
         }
-        table {
-            border-collapse: collapse;
-            width: 100%;
-            min-width: 1200px;
-        }
+        table { border-collapse: collapse; width: 100%; min-width: 1200px; }
         th, td {
             border: 1px solid #e0e0e0;
-            padding: 6px 4px;
+            padding: 8px 4px;
             text-align: center;
             font-size: 11px;
-            min-width: 40px;
+            min-width: 42px;
+            cursor: pointer;
         }
         th {
             background-color: #f8f9fa;
@@ -83,17 +71,23 @@
             font-weight: bold;
             min-width: 110px;
             padding-left: 8px;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
         }
-        .free {
-            background-color: #e8f5e9;
-            color: #2e7d32;
-        }
-        .booked {
-            background-color: #ffebee;
-            color: #c62828;
+        .free { background-color: #e8f5e9; color: #2e7d32; }
+        .free:active { background-color: #c8e6c9; }
+        
+        /* Цвета источников бронирования */
+        .booked-direct {
+            background-color: #e3f2fd;
+            color: #1565c0;
             font-weight: bold;
             line-height: 1.1;
-            font-size: 10px;
+        }
+        .booked-ical {
+            background-color: #fff3e0;
+            color: #e65100;
+            font-weight: bold;
+            line-height: 1.1;
         }
         .extra-bed-badge {
             display: inline-block;
@@ -124,8 +118,7 @@
                     <th class="cottage-header">Номер</th>
                 </tr>
             </thead>
-            <tbody id="matrixBody">
-            </tbody>
+            <tbody id="matrixBody"></tbody>
         </table>
     </div>
 
@@ -147,7 +140,6 @@
         let currentMonth = today.getMonth();
         let currentYear = today.getFullYear();
 
-        // Инициализация списков месяцев и лет
         function initSelectors() {
             const mSelect = document.getElementById('monthSelect');
             const ySelect = document.getElementById('yearSelect');
@@ -162,7 +154,6 @@
             });
 
             ySelect.innerHTML = '';
-            // Генерируем текущий год и следующий
             for (let y = currentYear; y <= currentYear + 2; y++) {
                 const opt = document.createElement('option');
                 opt.value = y;
@@ -174,13 +165,8 @@
 
         function changeMonth(delta) {
             currentMonth += delta;
-            if (currentMonth < 0) {
-                currentMonth = 11;
-                currentYear--;
-            } else if (currentMonth > 11) {
-                currentMonth = 0;
-                currentYear++;
-            }
+            if (currentMonth < 0) { currentMonth = 11; currentYear--; }
+            else if (currentMonth > 11) { currentMonth = 0; currentYear++; }
             document.getElementById('monthSelect').value = currentMonth;
             document.getElementById('yearSelect').value = currentYear;
             loadMatrix();
@@ -195,9 +181,7 @@
         function parseDateStr(str, year) {
             const parts = str.trim().split('.');
             if (parts.length < 2) return null;
-            const day = parseInt(parts[0], 10);
-            const month = parseInt(parts[1], 10) - 1;
-            return new Date(year, month, day);
+            return new Date(year, parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
         }
 
         function isDateInBooking(cellDate, bookingDatesStr) {
@@ -207,16 +191,32 @@
             if (parts.length === 2) {
                 const startDate = parseDateStr(parts[0], year);
                 const endDate = parseDateStr(parts[1], year);
-
                 if (startDate && endDate) {
                     cellDate.setHours(0,0,0,0);
                     startDate.setHours(0,0,0,0);
                     endDate.setHours(0,0,0,0);
-
                     return cellDate >= startDate && cellDate <= endDate;
                 }
             }
             return bookingDatesStr.includes(cellDate.getDate().toString().padStart(2, '0') + '.' + (cellDate.getMonth() + 1).toString().padStart(2, '0'));
+        }
+
+        function handleCellClick(cottage, dateStr, booking) {
+            if (booking) {
+                const extra = booking.has_extra_bed ? " (с допместом)" : "";
+                const source = booking.is_ical ? "Синхронизация iCal" : "Прямое бронирование";
+                tg.showPopup({
+                    title: `📌 ${cottage}`,
+                    message: `👤 Гость: ${booking.guest}${extra}\n🗓 Даты: ${booking.dates}\n🌐 Источник: ${source}`,
+                    buttons: [{type: "ok"}]
+                });
+            } else {
+                tg.showConfirm(`Забронировать ${cottage} на ${dateStr}?`, (confirmed) => {
+                    if (confirmed) {
+                        tg.sendData(JSON.stringify({action: "create_booking", cottage: cottage, date: dateStr}));
+                    }
+                });
+            }
         }
 
         async function loadMatrix() {
@@ -230,7 +230,6 @@
                 headerTr.innerHTML = '<th class="cottage-header">Номер</th>';
                 body.innerHTML = '';
 
-                // Определение количества дней в выбранном месяце
                 const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
                 const dateObjects = [];
 
@@ -253,19 +252,22 @@
 
                     dateObjects.forEach(dObj => {
                         const td = document.createElement('td');
+                        const dayFormatted = dObj.getDate().toString().padStart(2, '0') + '.' + (dObj.getMonth() + 1).toString().padStart(2, '0');
                         
                         const booking = bookings.find(b => b.cottage === cottage && isDateInBooking(new Date(dObj), b.dates));
                         
                         if (booking) {
-                            td.className = 'booked';
+                            td.className = booking.is_ical ? 'booked-ical' : 'booked-direct';
                             let htmlContent = booking.guest;
                             if (booking.has_extra_bed) {
                                 htmlContent += '<br><span class="extra-bed-badge">+доп</span>';
                             }
                             td.innerHTML = htmlContent;
+                            td.onclick = () => handleCellClick(cottage, dayFormatted, booking);
                         } else {
                             td.className = 'free';
                             td.innerText = '🟢';
+                            td.onclick = () => handleCellClick(cottage, dayFormatted, null);
                         }
                         tr.appendChild(td);
                     });
