@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Шахматка Ахьаца</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding: 10px;
+            background-color: #f4f5f7;
+            color: #333;
+        }
+        h2 {
+            text-align: center;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        .table-container {
+            overflow-x: auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            min-width: 600px;
+        }
+        th, td {
+            border: 1px solid #e0e0e0;
+            padding: 8px;
+            text-align: center;
+            font-size: 12px;
+        }
+        th {
+            background-color: #f8f9fa;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+        }
+        .cottage-header {
+            position: sticky;
+            left: 0;
+            background: #fff;
+            z-index: 3;
+            text-align: left;
+            font-weight: bold;
+            min-width: 120px;
+        }
+        .free {
+            background-color: #e8f5e9;
+            color: #2e7d32;
+        }
+        .booked {
+            background-color: #ffebee;
+            color: #c62828;
+            font-weight: bold;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h2>📅 Шахматка бронирований «Ахьаца»</h2>
+    <div class="table-container">
+        <table id="matrixTable">
+            <thead>
+                <tr id="dateHeader">
+                    <th class="cottage-header">Категория / Номер</th>
+                    <!-- Даты подгрузятся автоматически -->
+                </tr>
+            </thead>
+            <tbody id="matrixBody">
+                <!-- Строки подгрузятся автоматически -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+
+        const cottages = [
+            "Стандарт №1", "Стандарт №2", "Стандарт №3", "Стандарт №4", "Стандарт №5",
+            "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10",
+            "Стандарт с допместом"
+        ];
+
+        // Загрузка броней из FastAPI
+        async function loadMatrix() {
+            try {
+                const response = await fetch('/api/bookings');
+                const bookings = await response.json();
+                
+                const headerTr = document.getElementById('dateHeader');
+                const body = document.getElementById('matrixBody');
+
+                // Генерируем 10 дней, начиная с сегодня
+                const dates = [];
+                const today = new Date();
+                for (let i = 0; i < 10; i++) {
+                    const d = new Date(today);
+                    d.setDate(today.getDate() + i);
+                    const dayStr = d.getDate().toString().padStart(2, '0') + '.' + (d.getMonth() + 1).toString().padStart(2, '0');
+                    dates.push(dayStr);
+                    
+                    const th = document.createElement('th');
+                    th.innerText = dayStr;
+                    headerTr.appendChild(th);
+                }
+
+                // Заполняем таблицу по коттеджам
+                cottages.forEach(cottage => {
+                    const tr = document.createElement('tr');
+                    const tdName = document.createElement('td');
+                    tdName.className = 'cottage-header';
+                    tdName.innerText = cottage;
+                    tr.appendChild(tdName);
+
+                    dates.forEach(date => {
+                        const td = document.createElement('td');
+                        // Ищем, есть ли бронь на эту дату
+                        const booking = bookings.find(b => b.cottage === cottage && b.dates.includes(date));
+                        
+                        if (booking) {
+                            td.className = 'booked';
+                            td.innerText = booking.guest;
+                        } else {
+                            td.className = 'free';
+                            td.innerText = '🟢';
+                        }
+                        tr.appendChild(td);
+                    });
+
+                    body.appendChild(tr);
+                });
+
+            } catch (err) {
+                console.error("Ошибка загрузки:", err);
+            }
+        }
+
+        loadMatrix();
+    </script>
+</body>
+</html>
