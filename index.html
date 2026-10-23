@@ -13,27 +13,60 @@
             background-color: #f4f5f7;
             color: #333;
         }
+        .header-controls {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
         h2 {
-            text-align: center;
-            margin-bottom: 15px;
-            font-size: 18px;
+            margin: 0;
+            font-size: 16px;
+        }
+        .month-picker-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-nav {
+            background-color: #007aff;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .btn-nav:active {
+            opacity: 0.8;
+        }
+        select {
+            padding: 5px 8px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 13px;
+            background: white;
         }
         .table-container {
             overflow-x: auto;
             background: white;
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            max-height: 80vh;
         }
         table {
             border-collapse: collapse;
             width: 100%;
-            min-width: 700px;
+            min-width: 1200px;
         }
         th, td {
             border: 1px solid #e0e0e0;
-            padding: 8px;
+            padding: 6px 4px;
             text-align: center;
-            font-size: 12px;
+            font-size: 11px;
+            min-width: 40px;
         }
         th {
             background-color: #f8f9fa;
@@ -48,7 +81,8 @@
             z-index: 3;
             text-align: left;
             font-weight: bold;
-            min-width: 120px;
+            min-width: 110px;
+            padding-left: 8px;
         }
         .free {
             background-color: #e8f5e9;
@@ -58,26 +92,36 @@
             background-color: #ffebee;
             color: #c62828;
             font-weight: bold;
-            line-height: 1.2;
+            line-height: 1.1;
+            font-size: 10px;
         }
         .extra-bed-badge {
             display: inline-block;
-            font-size: 10px;
+            font-size: 9px;
             background: #ffc107;
             color: #000;
-            padding: 1px 4px;
+            padding: 1px 3px;
             border-radius: 3px;
             margin-top: 2px;
         }
     </style>
 </head>
 <body>
-    <h2>📅 Шахматка бронирований «Ахьаца»</h2>
+    <div class="header-controls">
+        <h2>📅 Шахматка «Ахьаца»</h2>
+        <div class="month-picker-container">
+            <button class="btn-nav" onclick="changeMonth(-1)">«</button>
+            <select id="monthSelect" onchange="renderCurrentSelection()"></select>
+            <select id="yearSelect" onchange="renderCurrentSelection()"></select>
+            <button class="btn-nav" onclick="changeMonth(1)">»</button>
+        </div>
+    </div>
+
     <div class="table-container">
         <table id="matrixTable">
             <thead>
                 <tr id="dateHeader">
-                    <th class="cottage-header">Категория / Номер</th>
+                    <th class="cottage-header">Номер</th>
                 </tr>
             </thead>
             <tbody id="matrixBody">
@@ -89,11 +133,64 @@
         const tg = window.Telegram.WebApp;
         tg.expand();
 
-        // 10 физических коттеджей
         const cottages = [
             "Стандарт №1", "Стандарт №2", "Стандарт №3", "Стандарт №4", "Стандарт №5",
             "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10"
         ];
+
+        const monthNames = [
+            "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+            "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
+        ];
+
+        const today = new Date();
+        let currentMonth = today.getMonth();
+        let currentYear = today.getFullYear();
+
+        // Инициализация списков месяцев и лет
+        function initSelectors() {
+            const mSelect = document.getElementById('monthSelect');
+            const ySelect = document.getElementById('yearSelect');
+
+            mSelect.innerHTML = '';
+            monthNames.forEach((m, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx;
+                opt.innerText = m;
+                if (idx === currentMonth) opt.selected = true;
+                mSelect.appendChild(opt);
+            });
+
+            ySelect.innerHTML = '';
+            // Генерируем текущий год и следующий
+            for (let y = currentYear; y <= currentYear + 2; y++) {
+                const opt = document.createElement('option');
+                opt.value = y;
+                opt.innerText = y;
+                if (y === currentYear) opt.selected = true;
+                ySelect.appendChild(opt);
+            }
+        }
+
+        function changeMonth(delta) {
+            currentMonth += delta;
+            if (currentMonth < 0) {
+                currentMonth = 11;
+                currentYear--;
+            } else if (currentMonth > 11) {
+                currentMonth = 0;
+                currentYear++;
+            }
+            document.getElementById('monthSelect').value = currentMonth;
+            document.getElementById('yearSelect').value = currentYear;
+            loadMatrix();
+        }
+
+        function renderCurrentSelection() {
+            currentMonth = parseInt(document.getElementById('monthSelect').value, 10);
+            currentYear = parseInt(document.getElementById('yearSelect').value, 10);
+            loadMatrix();
+        }
 
         function parseDateStr(str, year) {
             const parts = str.trim().split('.');
@@ -130,15 +227,18 @@
                 const headerTr = document.getElementById('dateHeader');
                 const body = document.getElementById('matrixBody');
 
-                const dateObjects = [];
-                const today = new Date();
+                headerTr.innerHTML = '<th class="cottage-header">Номер</th>';
+                body.innerHTML = '';
 
-                for (let i = 0; i < 10; i++) {
-                    const d = new Date(today);
-                    d.setDate(today.getDate() + i);
+                // Определение количества дней в выбранном месяце
+                const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+                const dateObjects = [];
+
+                for (let day = 1; day <= daysInMonth; day++) {
+                    const d = new Date(currentYear, currentMonth, day);
                     dateObjects.push(d);
                     
-                    const dayStr = d.getDate().toString().padStart(2, '0') + '.' + (d.getMonth() + 1).toString().padStart(2, '0');
+                    const dayStr = day.toString().padStart(2, '0') + '.' + (currentMonth + 1).toString().padStart(2, '0');
                     const th = document.createElement('th');
                     th.innerText = dayStr;
                     headerTr.appendChild(th);
@@ -178,6 +278,7 @@
             }
         }
 
+        initSelectors();
         loadMatrix();
     </script>
 </body>
