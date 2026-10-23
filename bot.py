@@ -26,6 +26,7 @@ COTTAGES = [
     "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10"
 ]
 
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -143,7 +144,7 @@ def get_all_icals():
 init_db()
 init_default_rates()
 
-# --- MARSHRUTY FASTAPI ---
+# --- FASTAPI ДЛЯ WEB APP ---
 @app.get("/")
 def index():
     return FileResponse("index.html")
@@ -153,7 +154,7 @@ def api_bookings():
     bookings = get_all_bookings()
     return [{"id": b[0], "cottage": b[1], "guest": b[2], "dates": b[3], "has_extra_bed": b[4], "is_ical": b[5]} for b in bookings]
 
-# --- FSM ---
+# --- FSM СОСТОЯНИЯ ---
 class BookingForm(StatesGroup):
     waiting_for_cottage = State()
     waiting_for_guest = State()
@@ -175,7 +176,7 @@ class ChannelForm(StatesGroup):
     waiting_for_channel = State()
     waiting_for_markup = State()
 
-# --- KEYBOARDS ---
+# --- КЛАВИАТУРЫ ---
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📅 Шахматка", web_app=WebAppInfo(url="https://celendarpro.onrender.com")), KeyboardButton(text="➕ Новая бронь")],
@@ -215,7 +216,7 @@ extra_bed_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# Обработка клика из Web App
+# --- КЛИК ИЗ WEB APP ---
 @dp.message(F.web_app_data)
 async def handle_web_app_data(message: types.Message, state: FSMContext):
     try:
@@ -223,10 +224,13 @@ async def handle_web_app_data(message: types.Message, state: FSMContext):
         if data.get("action") == "create_booking":
             cottage = data.get("cottage")
             date_start = data.get("date")
-            await state.update_data(cottage=cottage)
+            await state.update_data(cottage=cottage, dates=f"{date_start} - ")
             await state.set_state(BookingForm.waiting_for_guest)
             await message.answer(
-                f"📝 Создаем бронь для **{cottage}** начиная с **{date_start}**.\n\n"
+                f"📝 **Бронирование через Шахматку**\n"
+                f"───────────────\n"
+                f"🏡 **Коттедж:** {cottage}\n"
+                f"🗓 **Дата заезда:** {date_start}\n\n"
                 f"Введите имя или фамилию гостя:",
                 parse_mode="Markdown",
                 reply_markup=ReplyKeyboardRemove()
@@ -234,18 +238,49 @@ async def handle_web_app_data(message: types.Message, state: FSMContext):
     except Exception as e:
         print(f"Ошибка Web App data: {e}")
 
+# --- КОМАНДЫ ДЛЯ МЕНЮ (КОМАНДЫ '/') ---
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
-        "👋 Добро пожаловать в менеджер бронирований «Ахьаца»!\n\n"
-        "Выберите нужное действие на панели ниже:",
+        "🌿 **Гостевой дом «Ахьаца» | PMS**\n"
+        "───────────────\n"
+        "👋 Здравствуйте! Системный модуль управления бронированиями готов к работе.\n\n"
+        "Воспользуйтесь кнопками ниже или откройте **«Шахматку»** для управления сеткой номеров:",
+        parse_mode="Markdown",
         reply_markup=main_keyboard
     )
 
+@dp.message(Command("matrix"))
+async def cmd_matrix(message: types.Message):
+    await message.answer(
+        "📅 **Интерактивная шахматка бронирований:**\n\n"
+        "Нажмите кнопку ниже, чтобы открыть календарь:",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard
+    )
+
+@dp.message(Command("new"))
+async def cmd_new(message: types.Message, state: FSMContext):
+    await add_booking_start(message, state)
+
+@dp.message(Command("list"))
+async def cmd_list(message: types.Message):
+    await show_list(message)
+
+@dp.message(Command("rates"))
+async def cmd_rates(message: types.Message):
+    await show_rates_menu(message)
+
+@dp.message(Command("sync"))
+async def cmd_sync(message: types.Message):
+    await sync_calendars(message)
+
 @dp.message(F.text == "⬅️ Главное меню")
 async def back_to_main(message: types.Message):
-    await message.answer("Вы вернулись в главное меню:", reply_markup=main_keyboard)
+    await message.answer("👈 Вы вернулись в главное меню:", reply_markup=main_keyboard)
 
+# --- УПРАВЛЕНИЕ ЦЕНАМИ ---
 @dp.message(F.text == "💰 Цены и Тарифы")
 async def show_rates_menu(message: types.Message):
     await message.answer("💰 **Управление ценами и тарифами продаж:**", reply_markup=rates_keyboard)
@@ -253,7 +288,7 @@ async def show_rates_menu(message: types.Message):
 @dp.message(F.text == "💵 Базовые цены")
 async def show_base_rates(message: types.Message):
     rates = get_base_rates()
-    text = "💵 **Текущие базовые цены за ночь:**\n\n"
+    text = "💵 **Текущие базовые цены за ночь:**\n───────────────\n"
     for cottage, price in rates:
         text += f"• **{cottage}**: `{price} руб.`\n"
     await message.answer(text, parse_mode="Markdown")
@@ -262,7 +297,7 @@ async def show_base_rates(message: types.Message):
 async def show_channel_rates(message: types.Message):
     base_price = dict(get_base_rates()).get("Стандарт №1", 3500)
     channels = get_channel_rates()
-    text = f"🌐 **Тарифы каналов продаж (наценка к базовой цене ~{base_price} руб.):**\n\n"
+    text = f"🌐 **Тарифы каналов продаж (наценка к базовой цене ~{base_price} руб.):**\n───────────────\n"
     for ch, markup in channels:
         final_price = int(base_price * (1 + markup / 100))
         text += f"• **{ch}**: `+{markup}%` ➔ ~`{final_price} руб/ночь`\n"
@@ -322,6 +357,7 @@ async def process_channel_markup(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Наценка для канала **{channel}** установлена в `{markup}%`!", parse_mode="Markdown", reply_markup=rates_keyboard)
 
+# --- СОЗДАНИЕ И УПРАВЛЕНИЕ БРОНЯМИ ---
 @dp.message(F.text == "➕ Новая бронь")
 async def add_booking_start(message: types.Message, state: FSMContext):
     await state.set_state(BookingForm.waiting_for_cottage)
@@ -338,9 +374,13 @@ async def process_guest_cottage(message: types.Message, state: FSMContext):
 
 @dp.message(BookingForm.waiting_for_guest)
 async def process_guest(message: types.Message, state: FSMContext):
+    data = await state.get_data()
     await state.update_data(guest=message.text)
     await state.set_state(BookingForm.waiting_for_dates)
-    await message.answer("🗓 Введите даты заезда и выезда (например: `24.10 - 30.10`):", parse_mode="Markdown")
+    
+    prefill_date = data.get("dates", "")
+    prompt = f"🗓 Уточните или введите даты (например: `{prefill_date}30.10`):" if prefill_date else "🗓 Введите даты заезда и выезда (например: `24.10 - 30.10`):"
+    await message.answer(prompt, parse_mode="Markdown")
 
 @dp.message(BookingForm.waiting_for_dates)
 async def process_dates(message: types.Message, state: FSMContext):
@@ -356,16 +396,20 @@ async def process_extra_bed(message: types.Message, state: FSMContext):
     booking_dates = user_data['dates']
     
     has_extra_bed = 1 if "Да" in message.text else 0
-    extra_text = " (с допместом)" if has_extra_bed else ""
+    extra_text = " (+допместо)" if has_extra_bed else ""
 
     add_booking_to_db(cottage, guest_name, booking_dates, has_extra_bed, is_ical=0)
     await state.clear()
     
     await message.answer(
-        f"✅ **Бронь успешно сохранена!**\n\n"
-        f"🏡 Коттедж: **{cottage}**\n"
-        f"👤 Гость: **{guest_name}**{extra_text}\n"
-        f"🗓 Даты: **{booking_dates}**",
+        f"✨ **Бронирование успешно создано!**\n"
+        f"───────────────\n"
+        f"🏡 **Коттедж:** {cottage}\n"
+        f"👤 **Гость:** {guest_name}{extra_text}\n"
+        f"🗓 **Даты:** {booking_dates}\n"
+        f"🌐 **Источник:** Прямое бронирование\n"
+        f"───────────────\n"
+        f"📊 *Данные автоматически обновлены в интерактивной шахматке.*",
         parse_mode="Markdown",
         reply_markup=main_keyboard
     )
@@ -376,11 +420,11 @@ async def show_list(message: types.Message):
     if not bookings:
         await message.answer("📋 Ближайших заездов нет.")
     else:
-        text = "📋 **Список всех заездов:**\n\n"
+        text = "📋 **Список заездов:**\n───────────────\n"
         for i, b in enumerate(bookings, 1):
-            extra = " 🛏 (доп)" if b[4] else ""
-            src = " 🌐 [iCal]" if b[5] else " 🟦 [Прямая]"
-            text += f"{i}. **{b[1]}** | {b[2]}{extra}{src} — {b[3]}\n"
+            extra = " 🛏" if b[4] else ""
+            src = " 🌐" if b[5] else " 🟦"
+            text += f"{i}. **{b[1]}** | {b[2]}{extra}{src} — `{b[3]}`\n"
         await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "❌ Отменить бронь")
@@ -389,7 +433,7 @@ async def cancel_booking_start(message: types.Message, state: FSMContext):
     if not bookings:
         await message.answer("❌ У вас пока нет активных броней для отмены.")
         return
-    text = "❓ **Укажите номер брони для отмены:**\n\n"
+    text = "❓ **Укажите номер брони для отмены:**\n───────────────\n"
     for i, b in enumerate(bookings, 1):
         extra = " (+доп)" if b[4] else ""
         text += f"**{i}** — {b[1]} | {b[2]}{extra} ({b[3]})\n"
@@ -409,7 +453,7 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
         delete_booking_by_id(target_booking[0])
         await state.clear()
         await message.answer(
-            f"🗑 **Бронь отменена!**\n\n"
+            f"🗑 **Бронь отменена!**\n───────────────\n"
             f"Удалено: **{target_booking[1]}** — {target_booking[2]} ({target_booking[3]})",
             parse_mode="Markdown",
             reply_markup=main_keyboard
@@ -417,6 +461,7 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
     else:
         await message.answer("⚠️ Брони с таким номером не существует.")
 
+# --- ICAL СИНХРОНИЗАЦИЯ ---
 @dp.message(F.text == "⚙️ Настройки iCal")
 async def settings_ical(message: types.Message):
     await message.answer("⚙️ **Управление iCal ссылками:**", reply_markup=ical_keyboard)
@@ -427,7 +472,7 @@ async def list_icals(message: types.Message):
     if not icals:
         await message.answer("⚙️ У вас пока нет сохранённых iCal-ссылок.")
     else:
-        text = "📜 **Ваши iCal каналы:**\n\n"
+        text = "📜 **Ваши iCal каналы:**\n───────────────\n"
         for i, ic in enumerate(icals, 1):
             text += f"{i}. **{ic[1]}**:\n`{ic[2]}`\n\n"
         await message.answer(text, parse_mode="Markdown")
@@ -451,7 +496,7 @@ async def process_ical_url(message: types.Message, state: FSMContext):
     add_ical_to_db(source_name, url)
     await state.clear()
     await message.answer(
-        f"✅ **iCal-ссылка сохранена!**\n\n"
+        f"✅ **iCal-ссылка сохранена!**\n───────────────\n"
         f"📌 Площадка: **{source_name}**\n"
         f"🔗 Ссылка: `{url}`",
         parse_mode="Markdown",
@@ -490,11 +535,10 @@ async def sync_calendars(message: types.Message):
                 print(f"Ошибка синхронизации: {e}")
     await message.edit_text(f"✅ **Синхронизация завершена!**\n\nОбновлено броней: **{imported_count}**", parse_mode="Markdown")
 
-# Фоновая задача: ежедневно проверяет и делает сводку на 09:00
+# --- ФОНОВЫЕ УТРЕННИЕ УВЕДОМЛЕНИЯ ---
 async def daily_notifications_loop():
     while True:
         now = datetime.now()
-        # Каждое утро в 09:00
         if now.hour == 9 and now.minute == 0:
             today_str = now.strftime('%d.%m')
             bookings = get_all_bookings()
@@ -512,13 +556,13 @@ async def daily_notifications_loop():
                         check_outs.append(f"• **{b[1]}**: {b[2]}")
 
             if check_ins or check_outs:
-                report = f"☀️ **Доброе утро! План заездов/выездов на {today_str}:**\n\n"
+                report = f"☀️ **Доброе утро! План заездов/выездов на {today_str}:**\n───────────────\n"
                 if check_ins:
                     report += "📥 **Сегодня заезжают:**\n" + "\n".join(check_ins) + "\n\n"
                 if check_outs:
                     report += "📤 **Сегодня выезжают:**\n" + "\n".join(check_outs)
-                print(report) # Вывод в консоль сервера
-            await asyncio.sleep(60) # ждем 1 минуту, чтобы не спамить в течение этой минуты
+                print(report)
+            await asyncio.sleep(60)
         await asyncio.sleep(30)
 
 async def run_bot():
