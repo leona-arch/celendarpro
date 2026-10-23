@@ -2,14 +2,13 @@ import asyncio
 import os
 import sqlite3
 import aiohttp
-from datetime import datetime
-from icalendar import Calendar
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 import uvicorn
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
@@ -29,7 +28,6 @@ COTTAGES = [
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Таблица броней
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +36,6 @@ def init_db():
             dates TEXT NOT NULL
         )
     ''')
-    # Таблица iCal ссылок
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ical_links (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,14 +43,12 @@ def init_db():
             url TEXT NOT NULL
         )
     ''')
-    # Таблица базовых цен по категориям
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS base_rates (
             cottage TEXT PRIMARY KEY,
             price_per_night INTEGER NOT NULL
         )
     ''')
-    # Таблица тарифов каналов продаж (маржа / наценка)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS channel_rates (
             channel_name TEXT PRIMARY KEY,
@@ -63,20 +58,17 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Инициализация дефолтных цен, если их еще нет
 def init_default_rates():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     for cottage in COTTAGES:
         cursor.execute('INSERT OR IGNORE INTO base_rates (cottage, price_per_night) VALUES (?, ?)', (cottage, 3500))
-    # Дефолтные каналы продаж с их наценками (%)
     channels = [("Суточно.ру", 15), ("Островок", 15), ("Яндекс.Путешествия", 10)]
     for ch, markup in channels:
         cursor.execute('INSERT OR IGNORE INTO channel_rates (channel_name, markup_percent) VALUES (?, ?)', (ch, markup))
     conn.commit()
     conn.close()
 
-# Вспомогательные функции базы данных
 def get_all_bookings():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -147,7 +139,17 @@ def get_all_icals():
 init_db()
 init_default_rates()
 
-# --- FSM Классы ---
+# --- МАРШРУТЫ ДЛЯ WEB APP ---
+@app.get("/")
+def index():
+    return FileResponse("index.html")
+
+@app.get("/api/bookings")
+def api_bookings():
+    bookings = get_all_bookings()
+    return [{"id": b[0], "cottage": b[1], "guest": b[2], "dates": b[3]} for b in bookings]
+
+# --- FSM СОСТОЯНИЯ ---
 class BookingForm(StatesGroup):
     waiting_for_cottage = State()
     waiting_for_guest = State()
@@ -168,14 +170,10 @@ class ChannelForm(StatesGroup):
     waiting_for_channel = State()
     waiting_for_markup = State()
 
-@app.get("/")
-def index():
-    return {"status": "Ahatsa Bot is running!"}
-
 # --- КЛАВИАТУРЫ ---
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📅 Шахматка"), KeyboardButton(text="➕ Новая бронь")],
+        [KeyboardButton(text="📅 Шахматка", web_app=WebAppInfo(url="https://celendarpro.onrender.com")), KeyboardButton(text="➕ Новая бронь")],
         [KeyboardButton(text="📋 Ближайшие заезды"), KeyboardButton(text="❌ Отменить бронь")],
         [KeyboardButton(text="💰 Цены и Тарифы"), KeyboardButton(text="⚙️ Настройки iCal")],
         [KeyboardButton(text="🔄 Синхронизировать")]
@@ -217,30 +215,6 @@ async def cmd_start(message: types.Message):
 async def back_to_main(message: types.Message):
     await message.answer("Вы вернулись в главное меню:", reply_markup=main_keyboard)
 
-# --- ШАХМАТКА И ДОСТУПНОСТЬ ---
-@dp.message(F.text == "📅 Шахматка")
-async def show_calendar(message: types.Message):
-    bookings = get_all_bookings()
-    base_rates = dict(get_base_rates())
-    
-    text = "📅 **Шахматка и Доступность «Ахьаца»**\n"
-    text += "────────────────────\n\n"
-    
-    for cottage in COTTAGES:
-        cottage_bookings = [b for b in bookings if b[1] == cottage]
-        price = base_rates.get(cottage, 3500)
-        
-        text += f"🏡 **{cottage}** — `{price} руб/ночь`\n"
-        if not cottage_bookings:
-            text += "  └ 🟢 Доступен для бронирования\n\n"
-        else:
-            for b in cottage_bookings:
-                text += f"  └ 🔴 **{b[2]}**: {b[3]}\n"
-            text += "\n"
-            
-    await message.answer(text, parse_mode="Markdown")
-
-# --- УПРАВЛЕНИЕ ЦЕНАМИ И ТАРИФАМИ ---
 @dp.message(F.text == "💰 Цены и Тарифы")
 async def show_rates_menu(message: types.Message):
     await message.answer("💰 **Управление ценами и тарифами продаж:**", reply_markup=rates_keyboard)
@@ -257,15 +231,12 @@ async def show_base_rates(message: types.Message):
 async def show_channel_rates(message: types.Message):
     base_price = dict(get_base_rates()).get("Стандарт №1", 3500)
     channels = get_channel_rates()
-    
     text = f"🌐 **Тарифы каналов продаж (наценка к базовой цене ~{base_price} руб.):**\n\n"
     for ch, markup in channels:
         final_price = int(base_price * (1 + markup / 100))
         text += f"• **{ch}**: `+{markup}%` ➔ ~`{final_price} руб/ночь`\n"
-    
     await message.answer(text, parse_mode="Markdown")
 
-# Редактирование базовой цены
 @dp.message(F.text == "✏️ Изменить базовую цену")
 async def edit_base_price_start(message: types.Message, state: FSMContext):
     await state.set_state(PriceForm.waiting_for_cottage)
@@ -283,19 +254,15 @@ async def process_price_cottage(message: types.Message, state: FSMContext):
 @dp.message(PriceForm.waiting_for_price)
 async def process_price_value(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("⚠️ Введите цифрами (число), например `4000`.")
+        await message.answer("⚠️ Введите число, например `4000`.")
         return
-    
     data = await state.get_data()
     cottage = data['cottage']
     price = int(message.text)
-    
     update_base_rate(cottage, price)
     await state.clear()
-    
     await message.answer(f"✅ Базовая цена для **{cottage}** изменена на `{price} руб.`!", parse_mode="Markdown", reply_markup=rates_keyboard)
 
-# Редактирование наценки канала
 @dp.message(F.text == "✏️ Изменить наценку канала")
 async def edit_channel_start(message: types.Message, state: FSMContext):
     channels = get_channel_rates()
@@ -310,24 +277,20 @@ async def edit_channel_start(message: types.Message, state: FSMContext):
 async def process_channel_select(message: types.Message, state: FSMContext):
     await state.update_data(channel=message.text)
     await state.set_state(ChannelForm.waiting_for_markup)
-    await message.answer("📈 Введите размер наценки/комиссии в % (например `15`):")
+    await message.answer("📈 Введите размер наценки в % (например `15`):")
 
 @dp.message(ChannelForm.waiting_for_markup)
 async def process_channel_markup(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
         await message.answer("⚠️ Введите процент числом, например `15`.")
         return
-    
     data = await state.get_data()
     channel = data['channel']
     markup = int(message.text)
-    
     update_channel_markup(channel, markup)
     await state.clear()
-    
     await message.answer(f"✅ Наценка для канала **{channel}** установлена в `{markup}%`!", parse_mode="Markdown", reply_markup=rates_keyboard)
 
-# --- БРОНИРОВАНИЕ И ОТМЕНА ---
 @dp.message(F.text == "➕ Новая бронь")
 async def add_booking_start(message: types.Message, state: FSMContext):
     await state.set_state(BookingForm.waiting_for_cottage)
@@ -354,10 +317,8 @@ async def process_dates(message: types.Message, state: FSMContext):
     cottage = user_data['cottage']
     guest_name = user_data['guest']
     booking_dates = message.text
-    
     add_booking_to_db(cottage, guest_name, booking_dates)
     await state.clear()
-    
     await message.answer(
         f"✅ **Бронь успешно сохранена!**\n\n"
         f"🏡 Коттедж: **{cottage}**\n"
@@ -384,11 +345,9 @@ async def cancel_booking_start(message: types.Message, state: FSMContext):
     if not bookings:
         await message.answer("❌ У вас пока нет активных броней для отмены.")
         return
-    
     text = "❓ **Укажите номер брони для отмены:**\n\n"
     for i, b in enumerate(bookings, 1):
         text += f"**{i}** — {b[1]} | {b[2]} ({b[3]})\n"
-    
     text += "\n*Отправьте цифру в ответ:*"
     await state.set_state(CancelForm.waiting_for_number)
     await message.answer(text, parse_mode="Markdown")
@@ -398,10 +357,8 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
         await message.answer("⚠️ Введите номер цифрой.")
         return
-
     num = int(message.text) - 1
     bookings = get_all_bookings()
-
     if 0 <= num < len(bookings):
         target_booking = bookings[num]
         delete_booking_by_id(target_booking[0])
@@ -415,7 +372,6 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
     else:
         await message.answer("⚠️ Брони с таким номером не существует.")
 
-# --- iCal и СИНХРОНИЗАЦИЯ ---
 @dp.message(F.text == "⚙️ Настройки iCal")
 async def settings_ical(message: types.Message):
     await message.answer("⚙️ **Управление iCal ссылками:**", reply_markup=ical_keyboard)
@@ -447,10 +403,8 @@ async def process_ical_url(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     source_name = user_data['source_name']
     url = message.text
-    
     add_ical_to_db(source_name, url)
     await state.clear()
-    
     await message.answer(
         f"✅ **iCal-ссылка сохранена!**\n\n"
         f"📌 Площадка: **{source_name}**\n"
@@ -465,10 +419,8 @@ async def sync_calendars(message: types.Message):
     if not icals:
         await message.answer("⚠️ У вас не добавлены iCal ссылки.")
         return
-
     msg = await message.answer("🔄 Загружаю данные с площадок...")
     imported_count = 0
-
     async with aiohttp.ClientSession() as session:
         for ic in icals:
             source_name = ic[1]
@@ -477,22 +429,20 @@ async def sync_calendars(message: types.Message):
                 async with session.get(url, timeout=10) as resp:
                     if resp.status == 200:
                         content = await resp.text()
+                        from icalendar import Calendar
                         cal = Calendar.from_ical(content)
                         for component in cal.walk('vevent'):
                             summary = str(component.get('summary', f'Бронь ({source_name})'))
                             dtstart = component.get('dtstart')
                             dtend = component.get('dtend')
-                            
                             if dtstart and dtend:
                                 start_date = dtstart.dt.strftime('%d.%m') if hasattr(dtstart.dt, 'strftime') else str(dtstart.dt)
                                 end_date = dtend.dt.strftime('%d.%m') if hasattr(dtend.dt, 'strftime') else str(dtend.dt)
                                 dates_str = f"{start_date} - {end_date}"
-                                
                                 add_booking_to_db("Стандарт №1", summary, dates_str)
                                 imported_count += 1
             except Exception as e:
                 print(f"Ошибка синхронизации: {e}")
-
     await message.edit_text(f"✅ **Синхронизация завершена!**\n\nОбновлено броней: **{imported_count}**", parse_mode="Markdown")
 
 async def run_bot():
