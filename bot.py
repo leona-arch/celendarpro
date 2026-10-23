@@ -2,6 +2,7 @@ import asyncio
 import os
 import sqlite3
 import aiohttp
+from datetime import datetime, timedelta
 from icalendar import Calendar
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -17,8 +18,14 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 app = FastAPI()
 
-# --- БАЗА ДАННЫХ SQLITE ---
 DB_FILE = "bookings.db"
+
+# Список категорий и коттеджей "Ахьаца"
+COTTAGES = [
+    "Стандарт №1", "Стандарт №2", "Стандарт №3", "Стандарт №4", "Стандарт №5",
+    "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10",
+    "Стандарт с допместом"
+]
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -26,6 +33,7 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cottage TEXT NOT NULL,
             guest TEXT NOT NULL,
             dates TEXT NOT NULL
         )
@@ -40,20 +48,17 @@ def init_db():
     conn.commit()
     conn.close()
 
-def add_booking_to_db(guest, dates):
+def add_booking_to_db(cottage, guest, dates):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Проверяем, нет ли уже такой брони, чтобы не было дублей
-    cursor.execute('SELECT id FROM bookings WHERE guest = ? AND dates = ?', (guest, dates))
-    if not cursor.fetchone():
-        cursor.execute('INSERT INTO bookings (guest, dates) VALUES (?, ?)', (guest, dates))
-        conn.commit()
+    cursor.execute('INSERT INTO bookings (cottage, guest, dates) VALUES (?, ?, ?)', (cottage, guest, dates))
+    conn.commit()
     conn.close()
 
 def get_all_bookings():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, guest, dates FROM bookings')
+    cursor.execute('SELECT id, cottage, guest, dates FROM bookings')
     rows = cursor.fetchall()
     conn.close()
     return rows
@@ -82,8 +87,9 @@ def get_all_icals():
 
 init_db()
 
-# --- СОСТОЯНИЯ ---
+# --- FSM Состояния ---
 class BookingForm(StatesGroup):
+    waiting_for_cottage = State()
     waiting_for_guest = State()
     waiting_for_dates = State()
 
@@ -98,7 +104,7 @@ class IcalForm(StatesGroup):
 def index():
     return {"status": "Ahatsa Bot is running!"}
 
-# КЛАВИАТУРЫ
+# --- Клавиатуры ---
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📅 Шахматка"), KeyboardButton(text="➕ Новая бронь")],
@@ -116,6 +122,11 @@ ical_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+cottages_keyboard = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text=c)] for c in COTTAGES] + [[KeyboardButton(text="⬅️ Главное меню")]],
+    resize_keyboard=True
+)
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -128,40 +139,60 @@ async def cmd_start(message: types.Message):
 async def back_to_main(message: types.Message):
     await message.answer("Вы вернулись в главное меню:", reply_markup=main_keyboard)
 
+# --- Наглядная Шахматка по Коттеджам ---
 @dp.message(F.text == "📅 Шахматка")
 async def show_calendar(message: types.Message):
     bookings = get_all_bookings()
-    if not bookings:
-        await message.answer("📅 **Шахматка**\n\nВсе даты пока свободны!", parse_mode="Markdown")
-        return
     
-    text = "📅 **Актуальные бронирования «Ахьаца»:**\n\n"
-    for i, b in enumerate(bookings, 1):
-        text += f"{i}. 👤 **{b[1]}**: {b[2]}\n"
+    text = "📅 **Шахматка бронирований «Ахьаца»**\n"
+    text += "────────────────────\n\n"
+    
+    for cottage in COTTAGES:
+        cottage_bookings = [b for b in bookings if b[1] == cottage]
+        text += f"🏡 **{cottage}**:\n"
+        if not cottage_bookings:
+            text += "  └ 🟢 Свободен\n\n"
+        else:
+            for b in cottage_bookings:
+                text += f"  └ 🔴 **{b[2]}**: {b[3]}\n"
+            text += "\n"
+            
     await message.answer(text, parse_mode="Markdown")
 
+# --- Добавление брони с выбором коттеджа ---
 @dp.message(F.text == "➕ Новая бронь")
 async def add_booking_start(message: types.Message, state: FSMContext):
+    await state.set_state(BookingForm.waiting_for_cottage)
+    await message.answer("🏡 Выберите категории/номер коттеджа:", reply_markup=cottages_keyboard)
+
+@dp.message(BookingForm.waiting_for_cottage)
+async def process_cottage(message: types.Message, state: FSMContext):
+    if message.text not in COTTAGES:
+        await message.answer("⚠️ Пожалуйста, выберите коттедж из списка ниже.")
+        return
+    await state.update_data(cottage=message.text)
     await state.set_state(BookingForm.waiting_for_guest)
-    await message.answer("📝 Введите имя или фамилию гостя:")
+    await message.answer("📝 Введите имя или фамилию гостя:", reply_markup=types.ReplyKeyboardRemove())
 
 @dp.message(BookingForm.waiting_for_guest)
 async def process_guest(message: types.Message, state: FSMContext):
     await state.update_data(guest=message.text)
     await state.set_state(BookingForm.waiting_for_dates)
-    await message.answer("🗓 Введите даты заезда и выезда (например: `25.10 - 28.10`):", parse_mode="Markdown")
+    await message.answer("🗓 Введите даты заезда и выезда (например: `23.10 - 28.10`):", parse_mode="Markdown")
 
 @dp.message(BookingForm.waiting_for_dates)
 async def process_dates(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
+    cottage = user_data['cottage']
     guest_name = user_data['guest']
     booking_dates = message.text
     
-    add_booking_to_db(guest_name, booking_dates)
+    add_booking_to_db(cottage, guest_name, booking_dates)
     await state.clear()
     
     await message.answer(
         f"✅ **Бронь успешно сохранена!**\n\n"
+        f"🏡 Коттедж: **{cottage}**\n"
         f"👤 Гость: **{guest_name}**\n"
         f"🗓 Даты: **{booking_dates}**",
         parse_mode="Markdown",
@@ -174,10 +205,10 @@ async def show_list(message: types.Message):
     if not bookings:
         await message.answer("📋 Ближайших заездов нет.")
     else:
-        text = "📋 **Список ближайших заездов:**\n\n"
+        text = "📋 **Список всех заездов:**\n\n"
         for i, b in enumerate(bookings, 1):
-            text += f"{i}. {b[1]} — {b[2]}\n"
-        await message.answer(text)
+            text += f"{i}. **{b[1]}** | {b[2]} — {b[3]}\n"
+        await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "❌ Отменить бронь")
 async def cancel_booking_start(message: types.Message, state: FSMContext):
@@ -186,18 +217,18 @@ async def cancel_booking_start(message: types.Message, state: FSMContext):
         await message.answer("❌ У вас пока нет активных броней для отмены.")
         return
     
-    text = "❓ **Укажите номер брони, которую нужно отменить:**\n\n"
+    text = "❓ **Укажите номер брони для отмены:**\n\n"
     for i, b in enumerate(bookings, 1):
-        text += f"**{i}** — {b[1]} ({b[2]})\n"
+        text += f"**{i}** — {b[1]} | {b[2]} ({b[3]})\n"
     
-    text += "\n*Отправьте цифру в ответное сообщение:*"
+    text += "\n*Отправьте цифру в ответ:* "
     await state.set_state(CancelForm.waiting_for_number)
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(CancelForm.waiting_for_number)
 async def process_cancel_number(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
-        await message.answer("⚠️ Пожалуйста, введите только номер (цифрой), например `1`.")
+        await message.answer("⚠️ Введите только номер (цифрой), например `1`.")
         return
 
     num = int(message.text) - 1
@@ -209,19 +240,62 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer(
             f"🗑 **Бронь отменена!**\n\n"
-            f"Удалено: **{target_booking[1]}** ({target_booking[2]})",
+            f"Удалено: **{target_booking[1]}** — {target_booking[2]} ({target_booking[3]})",
             parse_mode="Markdown",
             reply_markup=main_keyboard
         )
     else:
-        await message.answer("⚠️ Брони с таким номером не существует. Попробуйте еще раз:")
+        await message.answer("⚠️ Брони с таким номером не существует. Попробуйте ещё раз:")
 
-# --- ЛОГИКА СИНХРОНИЗАЦИИ ICAL ---
+# --- Настройки и Синхронизация iCal ---
+@dp.message(F.text == "⚙️ Настройки iCal")
+async def settings_ical(message: types.Message):
+    await message.answer("⚙️ **Управление iCal ссылками:**", reply_markup=ical_keyboard)
+
+@dp.message(F.text == "📜 Список моих ссылок")
+async def list_icals(message: types.Message):
+    icals = get_all_icals()
+    if not icals:
+        await message.answer("⚙️ У вас пока нет сохранённых iCal-ссылок.")
+    else:
+        text = "📜 **Ваши iCal каналы:**\n\n"
+        for i, ic in enumerate(icals, 1):
+            text += f"{i}. **{ic[1]}**:\n`{ic[2]}`\n\n"
+        await message.answer(text, parse_mode="Markdown")
+
+@dp.message(F.text == "🔗 Добавить iCal ссылку")
+async def add_ical_start(message: types.Message, state: FSMContext):
+    await state.set_state(IcalForm.waiting_for_name)
+    await message.answer("📌 Введите название (например: `Суточно.ру`):", parse_mode="Markdown")
+
+@dp.message(IcalForm.waiting_for_name)
+async def process_ical_name(message: types.Message, state: FSMContext):
+    await state.update_data(source_name=message.text)
+    await state.set_state(IcalForm.waiting_for_url)
+    await message.answer("🔗 Отправьте iCal ссылку (начинается с `http://` или `https://`):", parse_mode="Markdown")
+
+@dp.message(IcalForm.waiting_for_url)
+async def process_ical_url(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    source_name = user_data['source_name']
+    url = message.text
+    
+    add_ical_to_db(source_name, url)
+    await state.clear()
+    
+    await message.answer(
+        f"✅ **iCal-ссылка сохранена!**\n\n"
+        f"📌 Площадка: **{source_name}**\n"
+        f"🔗 Ссылка: `{url}`",
+        parse_mode="Markdown",
+        reply_markup=ical_keyboard
+    )
+
 @dp.message(F.text == "🔄 Синхронизировать")
 async def sync_calendars(message: types.Message):
     icals = get_all_icals()
     if not icals:
-        await message.answer("⚠️ У вас не добавлены iCal ссылки. Зайдите в «⚙️ Настройки iCal», чтобы добавить их.")
+        await message.answer("⚠️ У вас не добавлены iCal ссылки. Зайдите в «⚙️ Настройки iCal».")
         return
 
     msg = await message.answer("🔄 Загружаю данные с площадок...")
@@ -246,59 +320,13 @@ async def sync_calendars(message: types.Message):
                                 end_date = dtend.dt.strftime('%d.%m') if hasattr(dtend.dt, 'strftime') else str(dtend.dt)
                                 dates_str = f"{start_date} - {end_date}"
                                 
-                                add_booking_to_db(summary, dates_str)
+                                # По умолчанию привязываем внешние брони к Стандарту №1 (или первому свободному)
+                                add_booking_to_db("Стандарт №1", summary, dates_str)
                                 imported_count += 1
             except Exception as e:
-                print(f"Ошибка синхронизации с {source_name}: {e}")
+                print(f"Ошибка синхронизации: {e}")
 
-    await message.edit_text(f"✅ **Синхронизация завершена!**\n\nИмпортировано/обновлено броней: **{imported_count}**", parse_mode="Markdown")
-
-@dp.message(F.text == "⚙️ Настройки iCal")
-async def settings_ical(message: types.Message):
-    await message.answer(
-        "⚙️ **Управление синхронизацией iCal**\n\n"
-        "Здесь вы можете привязать ссылки календарей с площадок бронирования.",
-        reply_markup=ical_keyboard
-    )
-
-@dp.message(F.text == "📜 Список моих ссылок")
-async def list_icals(message: types.Message):
-    icals = get_all_icals()
-    if not icals:
-        await message.answer("⚙️ У вас пока нет сохранённых iCal-ссылок.")
-    else:
-        text = "📜 **Ваши подключенные iCal каналы:**\n\n"
-        for i, ic in enumerate(icals, 1):
-            text += f"{i}. **{ic[1]}**:\n`{ic[2]}`\n\n"
-        await message.answer(text, parse_mode="Markdown")
-
-@dp.message(F.text == "🔗 Добавить iCal ссылку")
-async def add_ical_start(message: types.Message, state: FSMContext):
-    await state.set_state(IcalForm.waiting_for_name)
-    await message.answer("📌 Введите название площадки (например: `Суточно.ру`, `Островок` или `Яндекс`):", parse_mode="Markdown")
-
-@dp.message(IcalForm.waiting_for_name)
-async def process_ical_name(message: types.Message, state: FSMContext):
-    await state.update_data(source_name=message.text)
-    await state.set_state(IcalForm.waiting_for_url)
-    await message.answer("🔗 Теперь отправьте ссылку на iCal календарь (начинается с `http://` или `https://`):", parse_mode="Markdown")
-
-@dp.message(IcalForm.waiting_for_url)
-async def process_ical_url(message: types.Message, state: FSmContext if 'FSmContext' in globals() else FSMContext):
-    user_data = await state.get_data()
-    source_name = user_data['source_name']
-    url = message.text
-    
-    add_ical_to_db(source_name, url)
-    await state.clear()
-    
-    await message.answer(
-        f"✅ **iCal-ссылка успешно сохранена!**\n\n"
-        f"📌 Площадка: **{source_name}**\n"
-        f"🔗 Ссылка: `{url}`",
-        parse_mode="Markdown",
-        reply_markup=ical_keyboard
-    )
+    await message.edit_text(f"✅ **Синхронизация завершена!**\n\nОбновлено броней: **{imported_count}**", parse_mode="Markdown")
 
 async def run_bot():
     await dp.start_polling(bot)
