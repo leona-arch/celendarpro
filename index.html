@@ -48,7 +48,7 @@
             z-index: 3;
             text-align: left;
             font-weight: bold;
-            min-width: 130px;
+            min-width: 120px;
         }
         .free {
             background-color: #e8f5e9;
@@ -58,6 +58,16 @@
             background-color: #ffebee;
             color: #c62828;
             font-weight: bold;
+            line-height: 1.2;
+        }
+        .extra-bed-badge {
+            display: inline-block;
+            font-size: 10px;
+            background: #ffc107;
+            color: #000;
+            padding: 1px 4px;
+            border-radius: 3px;
+            margin-top: 2px;
         }
     </style>
 </head>
@@ -79,13 +89,12 @@
         const tg = window.Telegram.WebApp;
         tg.expand();
 
+        // 10 физических коттеджей
         const cottages = [
             "Стандарт №1", "Стандарт №2", "Стандарт №3", "Стандарт №4", "Стандарт №5",
-            "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10",
-            "Стандарт с допместом"
+            "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10"
         ];
 
-        // Преобразование строки "ДД.ММ" в дату для сравнения
         function parseDateStr(str, year) {
             const parts = str.trim().split('.');
             if (parts.length < 2) return null;
@@ -94,7 +103,6 @@
             return new Date(year, month, day);
         }
 
-        // Проверка, попадает ли дата дня в диапазон бронирования
         function isDateInBooking(cellDate, bookingDatesStr) {
             const parts = bookingDatesStr.split('-');
             const year = cellDate.getFullYear();
@@ -104,12 +112,10 @@
                 const endDate = parseDateStr(parts[1], year);
 
                 if (startDate && endDate) {
-                    // Нормализуем время для точного сравнения
                     cellDate.setHours(0,0,0,0);
                     startDate.setHours(0,0,0,0);
                     endDate.setHours(0,0,0,0);
 
-                    // Включаем промежуточные дни заезда (от даты старта до даты выезда)
                     return cellDate >= startDate && cellDate <= endDate;
                 }
             }
@@ -127,7 +133,6 @@
                 const dateObjects = [];
                 const today = new Date();
 
-                // Формируем сетку на 10 дней
                 for (let i = 0; i < 10; i++) {
                     const d = new Date(today);
                     d.setDate(today.getDate() + i);
@@ -149,12 +154,15 @@
                     dateObjects.forEach(dObj => {
                         const td = document.createElement('td');
                         
-                        // Ищем бронь для этого коттеджа на указанную дату
                         const booking = bookings.find(b => b.cottage === cottage && isDateInBooking(new Date(dObj), b.dates));
                         
                         if (booking) {
                             td.className = 'booked';
-                            td.innerText = booking.guest;
+                            let htmlContent = booking.guest;
+                            if (booking.has_extra_bed) {
+                                htmlContent += '<br><span class="extra-bed-badge">+доп</span>';
+                            }
+                            td.innerHTML = htmlContent;
                         } else {
                             td.className = 'free';
                             td.innerText = '🟢';
