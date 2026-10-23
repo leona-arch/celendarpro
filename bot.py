@@ -4,7 +4,7 @@ import sqlite3
 import aiohttp
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from fastapi import FastAPI
@@ -21,8 +21,7 @@ DB_FILE = "bookings.db"
 
 COTTAGES = [
     "Стандарт №1", "Стандарт №2", "Стандарт №3", "Стандарт №4", "Стандарт №5",
-    "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10",
-    "Стандарт с допместом"
+    "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10"
 ]
 
 def init_db():
@@ -33,7 +32,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cottage TEXT NOT NULL,
             guest TEXT NOT NULL,
-            dates TEXT NOT NULL
+            dates TEXT NOT NULL,
+            has_extra_bed INTEGER DEFAULT 0
         )
     ''')
     cursor.execute('''
@@ -72,15 +72,15 @@ def init_default_rates():
 def get_all_bookings():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('SELECT id, cottage, guest, dates FROM bookings')
+    cursor.execute('SELECT id, cottage, guest, dates, has_extra_bed FROM bookings')
     rows = cursor.fetchall()
     conn.close()
     return rows
 
-def add_booking_to_db(cottage, guest, dates):
+def add_booking_to_db(cottage, guest, dates, has_extra_bed=0):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO bookings (cottage, guest, dates) VALUES (?, ?, ?)', (cottage, guest, dates))
+    cursor.execute('INSERT INTO bookings (cottage, guest, dates, has_extra_bed) VALUES (?, ?, ?, ?)', (cottage, guest, dates, has_extra_bed))
     conn.commit()
     conn.close()
 
@@ -139,7 +139,7 @@ def get_all_icals():
 init_db()
 init_default_rates()
 
-# --- МАРШРУТЫ ДЛЯ WEB APP ---
+# --- МАРШРУТЫ WEB APP ---
 @app.get("/")
 def index():
     return FileResponse("index.html")
@@ -147,13 +147,14 @@ def index():
 @app.get("/api/bookings")
 def api_bookings():
     bookings = get_all_bookings()
-    return [{"id": b[0], "cottage": b[1], "guest": b[2], "dates": b[3]} for b in bookings]
+    return [{"id": b[0], "cottage": b[1], "guest": b[2], "dates": b[3], "has_extra_bed": b[4]} for b in bookings]
 
 # --- FSM СОСТОЯНИЯ ---
 class BookingForm(StatesGroup):
     waiting_for_cottage = State()
     waiting_for_guest = State()
     waiting_for_dates = State()
+    waiting_for_extra_bed = State()
 
 class CancelForm(StatesGroup):
     waiting_for_number = State()
@@ -203,6 +204,13 @@ cottages_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+extra_bed_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Да, с допместом"), KeyboardButton(text="Нет, без допместа")]
+    ],
+    resize_keyboard=True
+)
+
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -240,12 +248,12 @@ async def show_channel_rates(message: types.Message):
 @dp.message(F.text == "✏️ Изменить базовую цену")
 async def edit_base_price_start(message: types.Message, state: FSMContext):
     await state.set_state(PriceForm.waiting_for_cottage)
-    await message.answer("🏡 Выберите категории/номер коттеджа:", reply_markup=cottages_keyboard)
+    await message.answer("🏡 Выберите номер коттеджа:", reply_markup=cottages_keyboard)
 
 @dp.message(PriceForm.waiting_for_cottage)
 async def process_price_cottage(message: types.Message, state: FSMContext):
     if message.text not in COTTAGES:
-        await message.answer("⚠️ Выберите категории/номер из списка.")
+        await message.answer("⚠️ Выберите коттедж из списка.")
         return
     await state.update_data(cottage=message.text)
     await state.set_state(PriceForm.waiting_for_price)
@@ -291,10 +299,11 @@ async def process_channel_markup(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Наценка для канала **{channel}** установлена в `{markup}%`!", parse_mode="Markdown", reply_markup=rates_keyboard)
 
+# --- ДОБАВЛЕНИЕ БРОНИ ---
 @dp.message(F.text == "➕ Новая бронь")
 async def add_booking_start(message: types.Message, state: FSMContext):
     await state.set_state(BookingForm.waiting_for_cottage)
-    await message.answer("🏡 Выберите категории/номер коттеджа:", reply_markup=cottages_keyboard)
+    await message.answer("🏡 Выберите номер коттеджа:", reply_markup=cottages_keyboard)
 
 @dp.message(BookingForm.waiting_for_cottage)
 async def process_guest_cottage(message: types.Message, state: FSMContext):
@@ -303,26 +312,37 @@ async def process_guest_cottage(message: types.Message, state: FSMContext):
         return
     await state.update_data(cottage=message.text)
     await state.set_state(BookingForm.waiting_for_guest)
-    await message.answer("📝 Введите имя или фамилию гостя:", reply_markup=types.ReplyKeyboardRemove())
+    await message.answer("📝 Введите имя или фамилию гостя:", reply_markup=ReplyKeyboardRemove())
 
 @dp.message(BookingForm.waiting_for_guest)
 async def process_guest(message: types.Message, state: FSMContext):
     await state.update_data(guest=message.text)
     await state.set_state(BookingForm.waiting_for_dates)
-    await message.answer("🗓 Введите даты заезда и выезда (например: `23.10 - 28.10`):", parse_mode="Markdown")
+    await message.answer("🗓 Введите даты заезда и выезда (например: `24.10 - 30.10`):", parse_mode="Markdown")
 
 @dp.message(BookingForm.waiting_for_dates)
 async def process_dates(message: types.Message, state: FSMContext):
+    await state.update_data(dates=message.text)
+    await state.set_state(BookingForm.waiting_for_extra_bed)
+    await message.answer("🛏 Требуется дополнительное место?", reply_markup=extra_bed_keyboard)
+
+@dp.message(BookingForm.waiting_for_extra_bed)
+async def process_extra_bed(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     cottage = user_data['cottage']
     guest_name = user_data['guest']
-    booking_dates = message.text
-    add_booking_to_db(cottage, guest_name, booking_dates)
+    booking_dates = user_data['dates']
+    
+    has_extra_bed = 1 if "Да" in message.text else 0
+    extra_text = " (с допместом)" if has_extra_bed else ""
+
+    add_booking_to_db(cottage, guest_name, booking_dates, has_extra_bed)
     await state.clear()
+    
     await message.answer(
         f"✅ **Бронь успешно сохранена!**\n\n"
         f"🏡 Коттедж: **{cottage}**\n"
-        f"👤 Гость: **{guest_name}**\n"
+        f"👤 Гость: **{guest_name}**{extra_text}\n"
         f"🗓 Даты: **{booking_dates}**",
         parse_mode="Markdown",
         reply_markup=main_keyboard
@@ -336,7 +356,8 @@ async def show_list(message: types.Message):
     else:
         text = "📋 **Список всех заездов:**\n\n"
         for i, b in enumerate(bookings, 1):
-            text += f"{i}. **{b[1]}** | {b[2]} — {b[3]}\n"
+            extra = " 🛏 (допместо)" if b[4] else ""
+            text += f"{i}. **{b[1]}** | {b[2]}{extra} — {b[3]}\n"
         await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "❌ Отменить бронь")
@@ -347,7 +368,8 @@ async def cancel_booking_start(message: types.Message, state: FSMContext):
         return
     text = "❓ **Укажите номер брони для отмены:**\n\n"
     for i, b in enumerate(bookings, 1):
-        text += f"**{i}** — {b[1]} | {b[2]} ({b[3]})\n"
+        extra = " (+допместо)" if b[4] else ""
+        text += f"**{i}** — {b[1]} | {b[2]}{extra} ({b[3]})\n"
     text += "\n*Отправьте цифру в ответ:*"
     await state.set_state(CancelForm.waiting_for_number)
     await message.answer(text, parse_mode="Markdown")
