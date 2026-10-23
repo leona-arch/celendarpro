@@ -27,7 +27,7 @@
         table {
             border-collapse: collapse;
             width: 100%;
-            min-width: 600px;
+            min-width: 700px;
         }
         th, td {
             border: 1px solid #e0e0e0;
@@ -48,7 +48,7 @@
             z-index: 3;
             text-align: left;
             font-weight: bold;
-            min-width: 120px;
+            min-width: 130px;
         }
         .free {
             background-color: #e8f5e9;
@@ -58,7 +58,6 @@
             background-color: #ffebee;
             color: #c62828;
             font-weight: bold;
-            border-radius: 4px;
         }
     </style>
 </head>
@@ -69,11 +68,9 @@
             <thead>
                 <tr id="dateHeader">
                     <th class="cottage-header">Категория / Номер</th>
-                    <!-- Даты подгрузятся автоматически -->
                 </tr>
             </thead>
             <tbody id="matrixBody">
-                <!-- Строки подгрузятся автоматически -->
             </tbody>
         </table>
     </div>
@@ -88,7 +85,37 @@
             "Стандарт с допместом"
         ];
 
-        // Загрузка броней из FastAPI
+        // Преобразование строки "ДД.ММ" в дату для сравнения
+        function parseDateStr(str, year) {
+            const parts = str.trim().split('.');
+            if (parts.length < 2) return null;
+            const day = parseInt(parts[0], 10);
+            const month = parseInt(parts[1], 10) - 1;
+            return new Date(year, month, day);
+        }
+
+        // Проверка, попадает ли дата дня в диапазон бронирования
+        function isDateInBooking(cellDate, bookingDatesStr) {
+            const parts = bookingDatesStr.split('-');
+            const year = cellDate.getFullYear();
+
+            if (parts.length === 2) {
+                const startDate = parseDateStr(parts[0], year);
+                const endDate = parseDateStr(parts[1], year);
+
+                if (startDate && endDate) {
+                    // Нормализуем время для точного сравнения
+                    cellDate.setHours(0,0,0,0);
+                    startDate.setHours(0,0,0,0);
+                    endDate.setHours(0,0,0,0);
+
+                    // Включаем промежуточные дни заезда (от даты старта до даты выезда)
+                    return cellDate >= startDate && cellDate <= endDate;
+                }
+            }
+            return bookingDatesStr.includes(cellDate.getDate().toString().padStart(2, '0') + '.' + (cellDate.getMonth() + 1).toString().padStart(2, '0'));
+        }
+
         async function loadMatrix() {
             try {
                 const response = await fetch('/api/bookings');
@@ -97,21 +124,21 @@
                 const headerTr = document.getElementById('dateHeader');
                 const body = document.getElementById('matrixBody');
 
-                // Генерируем 10 дней, начиная с сегодня
-                const dates = [];
+                const dateObjects = [];
                 const today = new Date();
+
+                // Формируем сетку на 10 дней
                 for (let i = 0; i < 10; i++) {
                     const d = new Date(today);
                     d.setDate(today.getDate() + i);
-                    const dayStr = d.getDate().toString().padStart(2, '0') + '.' + (d.getMonth() + 1).toString().padStart(2, '0');
-                    dates.push(dayStr);
+                    dateObjects.push(d);
                     
+                    const dayStr = d.getDate().toString().padStart(2, '0') + '.' + (d.getMonth() + 1).toString().padStart(2, '0');
                     const th = document.createElement('th');
                     th.innerText = dayStr;
                     headerTr.appendChild(th);
                 }
 
-                // Заполняем таблицу по коттеджам
                 cottages.forEach(cottage => {
                     const tr = document.createElement('tr');
                     const tdName = document.createElement('td');
@@ -119,10 +146,11 @@
                     tdName.innerText = cottage;
                     tr.appendChild(tdName);
 
-                    dates.forEach(date => {
+                    dateObjects.forEach(dObj => {
                         const td = document.createElement('td');
-                        // Ищем, есть ли бронь на эту дату
-                        const booking = bookings.find(b => b.cottage === cottage && b.dates.includes(date));
+                        
+                        // Ищем бронь для этого коттеджа на указанную дату
+                        const booking = bookings.find(b => b.cottage === cottage && isDateInBooking(new Date(dObj), b.dates));
                         
                         if (booking) {
                             td.className = 'booked';
