@@ -11,7 +11,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, Reply
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 import uvicorn
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
@@ -159,7 +159,7 @@ def get_all_icals():
 init_db()
 init_default_rates()
 
-# --- FASTAPI ДЛЯ WEB APP ---
+# --- FASTAPI И ЭКСПОРТ ICAL ДЛЯ ВНЕШНИХ ПЛОЩАДОК ---
 @app.get("/")
 def index():
     return FileResponse("index.html")
@@ -168,6 +168,58 @@ def index():
 def api_bookings():
     bookings = get_all_bookings()
     return [{"id": b['id'], "cottage": b['cottage'], "guest": b['guest'], "dates": b['dates'], "has_extra_bed": b['has_extra_bed'], "is_ical": b['is_ical']} for b in bookings]
+
+@app.get("/ical")
+def get_ical_feed():
+    """Генерирует iCal файл со всеми бронями для автоматического импорта в Суточно.ру и др. площадки"""
+    bookings = get_all_bookings()
+    
+    ics_content = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Akhatsa PMS//Ru",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        "X-WR-CALNAME:Ахьаца Бронирования"
+    ]
+    
+    for b in bookings:
+        dates_part = b['dates'].split('-')
+        if len(dates_part) == 2:
+            try:
+                start_str = dates_part[0].strip()
+                end_str = dates_part[1].strip()
+                
+                now_year = datetime.now().year
+                
+                def parse_date(dt_str):
+                    parts = dt_str.split('.')
+                    if len(parts) == 2:
+                        d, m = map(int, parts)
+                        y = now_year
+                    elif len(parts) == 3:
+                        d, m, y = map(int, parts)
+                    return f"{y:04d}{m:02d}{d:02d}"
+
+                dt_start = parse_date(start_str)
+                dt_end = parse_date(end_str)
+                
+                ics_content.extend([
+                    "BEGIN:VEVENT",
+                    f"UID:booking-{b['id']}@akhatsa",
+                    f"SUMMARY:Занято ({b['cottage']} - {b['guest']})",
+                    f"DTSTART;VALUE=DATE:{dt_start}",
+                    f"DTEND;VALUE=DATE:{dt_end}",
+                    "STATUS:CONFIRMED",
+                    "END:VEVENT"
+                ])
+            except Exception as e:
+                print(f"Ошибка парсинга даты для iCal: {e}")
+                
+    ics_content.append("END:VCALENDAR")
+    
+    full_ics = "\r\n".join(ics_content)
+    return Response(content=full_ics, media_type="text/calendar")
 
 # --- FSM СОСТОЯНИЯ ---
 class BookingForm(StatesGroup):
