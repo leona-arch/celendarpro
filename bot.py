@@ -1,9 +1,10 @@
 import asyncio
 import os
-import sqlite3
 import json
 import aiohttp
 from datetime import datetime
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, WebAppInfo, ReplyKeyboardRemove
@@ -14,25 +15,28 @@ from fastapi.responses import FileResponse
 import uvicorn
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_БОТА")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 app = FastAPI()
-
-DB_FILE = "bookings.db"
 
 COTTAGES = [
     "Стандарт №1", "Стандарт №2", "Стандарт №3", "Стандарт №4", "Стандарт №5",
     "Стандарт №6", "Стандарт №7", "Стандарт №8", "Стандарт №9", "Стандарт №10"
 ]
 
-# --- БАЗА ДАННЫХ ---
+# --- ПОДКЛЮЧЕНИЕ К POSTGRESQL (SUPABASE) ---
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+# --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ---
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bookings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             cottage TEXT NOT NULL,
             guest TEXT NOT NULL,
             dates TEXT NOT NULL,
@@ -42,7 +46,7 @@ def init_db():
     ''')
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ical_links (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             source_name TEXT NOT NULL,
             url TEXT NOT NULL
         )
@@ -60,84 +64,95 @@ def init_db():
         )
     ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 def init_default_rates():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     for cottage in COTTAGES:
-        cursor.execute('INSERT OR IGNORE INTO base_rates (cottage, price_per_night) VALUES (?, ?)', (cottage, 3500))
+        cursor.execute('INSERT INTO base_rates (cottage, price_per_night) VALUES (%s, %s) ON CONFLICT (cottage) DO NOTHING', (cottage, 3500))
     channels = [("Суточно.ру", 15), ("Островок", 15), ("Яндекс.Путешествия", 10)]
     for ch, markup in channels:
-        cursor.execute('INSERT OR IGNORE INTO channel_rates (channel_name, markup_percent) VALUES (?, ?)', (ch, markup))
+        cursor.execute('INSERT INTO channel_rates (channel_name, markup_percent) VALUES (%s, %s) ON CONFLICT (channel_name) DO NOTHING', (ch, markup))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_all_bookings():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT id, cottage, guest, dates, has_extra_bed, is_ical FROM bookings')
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
 def add_booking_to_db(cottage, guest, dates, has_extra_bed=0, is_ical=0):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO bookings (cottage, guest, dates, has_extra_bed, is_ical) VALUES (?, ?, ?, ?, ?)', 
+    cursor.execute('INSERT INTO bookings (cottage, guest, dates, has_extra_bed, is_ical) VALUES (%s, %s, %s, %s, %s)', 
                    (cottage, guest, dates, has_extra_bed, is_ical))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def delete_booking_by_id(booking_id):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('DELETE FROM bookings WHERE id = ?', (booking_id,))
+    cursor.execute('DELETE FROM bookings WHERE id = %s', (booking_id,))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_base_rates():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT cottage, price_per_night FROM base_rates')
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
 def update_base_rate(cottage, price):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('UPDATE base_rates SET price_per_night = ? WHERE cottage = ?', (price, cottage))
+    cursor.execute('UPDATE base_rates SET price_per_night = %s WHERE cottage = %s', (price, cottage))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_channel_rates():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT channel_name, markup_percent FROM channel_rates')
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
 def update_channel_markup(channel, markup):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('UPDATE channel_rates SET markup_percent = ? WHERE channel_name = ?', (markup, channel))
+    cursor.execute('UPDATE channel_rates SET markup_percent = %s WHERE channel_name = %s', (markup, channel))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def add_ical_to_db(source_name, url):
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('INSERT INTO ical_links (source_name, url) VALUES (?, ?)', (source_name, url))
+    cursor.execute('INSERT INTO ical_links (source_name, url) VALUES (%s, %s)', (source_name, url))
     conn.commit()
+    cursor.close()
     conn.close()
 
 def get_all_icals():
-    conn = sqlite3.connect(DB_FILE)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('SELECT id, source_name, url FROM ical_links')
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
@@ -152,7 +167,7 @@ def index():
 @app.get("/api/bookings")
 def api_bookings():
     bookings = get_all_bookings()
-    return [{"id": b[0], "cottage": b[1], "guest": b[2], "dates": b[3], "has_extra_bed": b[4], "is_ical": b[5]} for b in bookings]
+    return [{"id": b['id'], "cottage": b['cottage'], "guest": b['guest'], "dates": b['dates'], "has_extra_bed": b['has_extra_bed'], "is_ical": b['is_ical']} for b in bookings]
 
 # --- FSM СОСТОЯНИЯ ---
 class BookingForm(StatesGroup):
@@ -238,27 +253,21 @@ async def handle_web_app_data(message: types.Message, state: FSMContext):
     except Exception as e:
         print(f"Ошибка Web App data: {e}")
 
-# --- КОМАНДЫ ДЛЯ МЕНЮ (КОМАНДЫ '/') ---
-
+# --- КОМАНДЫ ДЛЯ МЕНЮ ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     await message.answer(
         "🌿 **Гостевой дом «Ахьаца» | PMS**\n"
         "───────────────\n"
-        "👋 Здравствуйте! Системный модуль управления бронированиями готов к работе.\n\n"
-        "Воспользуйтесь кнопками ниже или откройте **«Шахматку»** для управления сеткой номеров:",
+        "👋 Здравствуйте! Система управления бронированиями подключена к облаку Supabase и готова к работе.\n\n"
+        "Воспользуйтесь кнопками ниже или откройте **«Шахматку»**:",
         parse_mode="Markdown",
         reply_markup=main_keyboard
     )
 
 @dp.message(Command("matrix"))
 async def cmd_matrix(message: types.Message):
-    await message.answer(
-        "📅 **Интерактивная шахматка бронирований:**\n\n"
-        "Нажмите кнопку ниже, чтобы открыть календарь:",
-        parse_mode="Markdown",
-        reply_markup=main_keyboard
-    )
+    await message.answer("📅 **Интерактивная шахматка бронирований:**", reply_markup=main_keyboard)
 
 @dp.message(Command("new"))
 async def cmd_new(message: types.Message, state: FSMContext):
@@ -289,18 +298,19 @@ async def show_rates_menu(message: types.Message):
 async def show_base_rates(message: types.Message):
     rates = get_base_rates()
     text = "💵 **Текущие базовые цены за ночь:**\n───────────────\n"
-    for cottage, price in rates:
-        text += f"• **{cottage}**: `{price} руб.`\n"
+    for r in rates:
+        text += f"• **{r['cottage']}**: `{r['price_per_night']} руб.`\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "🌐 Тарифы каналов")
 async def show_channel_rates(message: types.Message):
-    base_price = dict(get_base_rates()).get("Стандарт №1", 3500)
+    rates_dict = dict((r['cottage'], r['price_per_night']) for r in get_base_rates())
+    base_price = rates_dict.get("Стандарт №1", 3500)
     channels = get_channel_rates()
     text = f"🌐 **Тарифы каналов продаж (наценка к базовой цене ~{base_price} руб.):**\n───────────────\n"
-    for ch, markup in channels:
-        final_price = int(base_price * (1 + markup / 100))
-        text += f"• **{ch}**: `+{markup}%` ➔ ~`{final_price} руб/ночь`\n"
+    for ch in channels:
+        final_price = int(base_price * (1 + ch['markup_percent'] / 100))
+        text += f"• **{ch['channel_name']}**: `+{ch['markup_percent']}%` ➔ ~`{final_price} руб/ночь`\n"
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "✏️ Изменить базовую цену")
@@ -333,7 +343,7 @@ async def process_price_value(message: types.Message, state: FSMContext):
 async def edit_channel_start(message: types.Message, state: FSMContext):
     channels = get_channel_rates()
     kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text=ch[0])] for ch in channels] + [[KeyboardButton(text="⬅️ Главное меню")]],
+        keyboard=[[KeyboardButton(text=ch['channel_name'])] for ch in channels] + [[KeyboardButton(text="⬅️ Главное меню")]],
         resize_keyboard=True
     )
     await state.set_state(ChannelForm.waiting_for_channel)
@@ -422,9 +432,9 @@ async def show_list(message: types.Message):
     else:
         text = "📋 **Список заездов:**\n───────────────\n"
         for i, b in enumerate(bookings, 1):
-            extra = " 🛏" if b[4] else ""
-            src = " 🌐" if b[5] else " 🟦"
-            text += f"{i}. **{b[1]}** | {b[2]}{extra}{src} — `{b[3]}`\n"
+            extra = " 🛏" if b['has_extra_bed'] else ""
+            src = " 🌐" if b['is_ical'] else " 🟦"
+            text += f"{i}. **{b['cottage']}** | {b['guest']}{extra}{src} — `{b['dates']}`\n"
         await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "❌ Отменить бронь")
@@ -435,8 +445,8 @@ async def cancel_booking_start(message: types.Message, state: FSMContext):
         return
     text = "❓ **Укажите номер брони для отмены:**\n───────────────\n"
     for i, b in enumerate(bookings, 1):
-        extra = " (+доп)" if b[4] else ""
-        text += f"**{i}** — {b[1]} | {b[2]}{extra} ({b[3]})\n"
+        extra = " (+доп)" if b['has_extra_bed'] else ""
+        text += f"**{i}** — {b['cottage']} | {b['guest']}{extra} ({b['dates']})\n"
     text += "\n*Отправьте цифру в ответ:*"
     await state.set_state(CancelForm.waiting_for_number)
     await message.answer(text, parse_mode="Markdown")
@@ -450,11 +460,11 @@ async def process_cancel_number(message: types.Message, state: FSMContext):
     bookings = get_all_bookings()
     if 0 <= num < len(bookings):
         target_booking = bookings[num]
-        delete_booking_by_id(target_booking[0])
+        delete_booking_by_id(target_booking['id'])
         await state.clear()
         await message.answer(
             f"🗑 **Бронь отменена!**\n───────────────\n"
-            f"Удалено: **{target_booking[1]}** — {target_booking[2]} ({target_booking[3]})",
+            f"Удалено: **{target_booking['cottage']}** — {target_booking['guest']} ({target_booking['dates']})",
             parse_mode="Markdown",
             reply_markup=main_keyboard
         )
@@ -474,7 +484,7 @@ async def list_icals(message: types.Message):
     else:
         text = "📜 **Ваши iCal каналы:**\n───────────────\n"
         for i, ic in enumerate(icals, 1):
-            text += f"{i}. **{ic[1]}**:\n`{ic[2]}`\n\n"
+            text += f"{i}. **{ic['source_name']}**:\n`{ic['url']}`\n\n"
         await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "🔗 Добавить iCal ссылку")
@@ -513,8 +523,8 @@ async def sync_calendars(message: types.Message):
     imported_count = 0
     async with aiohttp.ClientSession() as session:
         for ic in icals:
-            source_name = ic[1]
-            url = ic[2]
+            source_name = ic['source_name']
+            url = ic['url']
             try:
                 async with session.get(url, timeout=10) as resp:
                     if resp.status == 200:
@@ -546,14 +556,14 @@ async def daily_notifications_loop():
             check_outs = []
             
             for b in bookings:
-                dates_part = b[3].split('-')
+                dates_part = b['dates'].split('-')
                 if len(dates_part) == 2:
                     start_d = dates_part[0].strip()
                     end_d = dates_part[1].strip()
                     if start_d == today_str:
-                        check_ins.append(f"• **{b[1]}**: {b[2]}")
+                        check_ins.append(f"• **{b['cottage']}**: {b['guest']}")
                     if end_d == today_str:
-                        check_outs.append(f"• **{b[1]}**: {b[2]}")
+                        check_outs.append(f"• **{b['cottage']}**: {b['guest']}")
 
             if check_ins or check_outs:
                 report = f"☀️ **Доброе утро! План заездов/выездов на {today_str}:**\n───────────────\n"
