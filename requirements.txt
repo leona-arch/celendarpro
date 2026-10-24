@@ -1,5 +1,6 @@
 aiogram
+psycopg2-binary
 fastapi
 uvicorn
+aiohttp
 icalendar
-psycopg2-binary
